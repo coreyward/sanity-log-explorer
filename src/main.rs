@@ -29,16 +29,6 @@ struct PathStats {
     bandwidth_sum: u64,
 }
 
-impl PathStats {
-    fn avg_request_size(&self) -> u64 {
-        if self.request_count == 0 {
-            0
-        } else {
-            self.bandwidth_sum / self.request_count
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SortField {
     Path,
@@ -47,7 +37,13 @@ enum SortField {
     Bandwidth,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewMode {
+    Path,
+    Type,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum RequestType {
     Image,
     File,
@@ -75,22 +71,46 @@ impl RequestType {
     }
 }
 
+#[derive(Debug, Clone)]
+struct DisplayRow {
+    label: String,
+    request_count: u64,
+    bandwidth_sum: u64,
+    req_type: RequestType,
+    open_url: Option<String>,
+    is_group: bool,
+}
+
+impl DisplayRow {
+    fn avg_size(&self) -> u64 {
+        if self.request_count == 0 {
+            0
+        } else {
+            self.bandwidth_sum / self.request_count
+        }
+    }
+}
+
 struct App {
-    items: Vec<PathStats>,
+    base_items: Vec<PathStats>,
+    items: Vec<DisplayRow>,
     sort_field: SortField,
     descending: bool,
     table_state: TableState,
+    view_mode: ViewMode,
 }
 
 impl App {
-    fn new(items: Vec<PathStats>) -> Self {
+    fn new(base_items: Vec<PathStats>) -> Self {
         let mut app = Self {
-            items,
+            base_items,
+            items: Vec::new(),
             sort_field: SortField::Bandwidth,
             descending: true,
             table_state: TableState::default(),
+            view_mode: ViewMode::Path,
         };
-        app.sort_items();
+        app.rebuild_view();
         if !app.items.is_empty() {
             app.table_state.select(Some(0));
         }
@@ -104,26 +124,23 @@ impl App {
             self.sort_field = field;
             self.descending = field != SortField::Path;
         }
-        self.sort_items();
+        self.rebuild_view();
         self.clamp_selection();
     }
 
-    fn sort_items(&mut self) {
+    fn toggle_view(&mut self) {
+        self.view_mode = match self.view_mode {
+            ViewMode::Path => ViewMode::Type,
+            ViewMode::Type => ViewMode::Path,
+        };
+        self.rebuild_view();
+        self.clamp_selection();
+    }
+
+    fn rebuild_view(&mut self) {
         let descending = self.descending;
         let field = self.sort_field;
-        self.items.sort_by(|a, b| {
-            let ordering = match field {
-                SortField::Path => a.path.cmp(&b.path),
-                SortField::Requests => a.request_count.cmp(&b.request_count),
-                SortField::AvgRequestSize => a.avg_request_size().cmp(&b.avg_request_size()),
-                SortField::Bandwidth => a.bandwidth_sum.cmp(&b.bandwidth_sum),
-            };
-            if descending {
-                ordering.reverse()
-            } else {
-                ordering
-            }
-        });
+        self.items = build_display_rows(&self.base_items, self.view_mode, field, descending);
     }
 
     fn clamp_selection(&mut self) {
@@ -217,7 +234,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Enter => {
             if let Some(selected) = app.table_state.selected() {
                 if let Some(item) = app.items.get(selected) {
-                    let _ = open_url(&item.sample_url);
+                    if let Some(url) = item.open_url.as_deref() {
+                        let _ = open_url(url);
+                    }
                 }
             }
         }
@@ -225,6 +244,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('s') => app.set_sort(SortField::AvgRequestSize),
         KeyCode::Char('b') => app.set_sort(SortField::Bandwidth),
         KeyCode::Char('p') => app.set_sort(SortField::Path),
+        KeyCode::Char('t') => app.toggle_view(),
         _ => {}
     }
     false
@@ -239,7 +259,7 @@ fn render(frame: &mut Frame, app: &mut App) {
 fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
     let path_width = path_column_width(area.width);
     let header = Row::new([
-        Cell::from("T"),
+        type_header_cell(),
         header_cell("Path", 'p', app, SortField::Path),
         header_cell("Requests", 'r', app, SortField::Requests),
         header_cell("Size (Avg)", 's', app, SortField::AvgRequestSize),
@@ -253,7 +273,7 @@ fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .map(|item| row_for_item(item, path_width));
 
-    let totals_row = totals_row(&app.items, path_width);
+    let totals_row = totals_row(&app.base_items, path_width);
     let rows = rows.chain(std::iter::once(totals_row));
 
     let table = Table::new(
@@ -279,9 +299,17 @@ fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
 
 fn render_help(frame: &mut Frame, area: Rect) {
     let help = Block::default().title(
-        "Keys: q quit | up/down or j/k move | enter open | p path | r requests | s avg size | b bandwidth | repeat toggles asc/desc",
+        "Keys: q quit | up/down or j/k move | enter open | t type view | p path | r requests | s avg size | b bandwidth | repeat toggles asc/desc",
     );
     frame.render_widget(help, area);
+}
+
+fn type_header_cell() -> Cell<'static> {
+    let line = Line::from(vec![Span::styled(
+        "T",
+        Style::default().add_modifier(Modifier::UNDERLINED),
+    )]);
+    Cell::from(line)
 }
 
 fn header_cell(label: &str, shortcut: char, app: &App, field: SortField) -> Cell<'static> {
@@ -394,7 +422,7 @@ fn visible_row_count(height: u16) -> usize {
 }
 
 fn visible_range(
-    items: &[PathStats],
+    items: &[DisplayRow],
     selected: Option<usize>,
     visible_rows: usize,
 ) -> (usize, usize) {
@@ -414,20 +442,171 @@ fn visible_range(
     (start, end)
 }
 
-fn row_for_item(item: &PathStats, path_width: usize) -> Row<'static> {
-    let req_type = detect_request_type(&item.path);
-    let stripped = strip_path(&item.path, req_type);
-    let display_path = format_path_display(&stripped, path_width);
-    let type_cell =
-        Cell::from(req_type.label().to_string()).style(Style::default().fg(req_type.color()));
+fn build_display_rows(
+    base_items: &[PathStats],
+    view_mode: ViewMode,
+    field: SortField,
+    descending: bool,
+) -> Vec<DisplayRow> {
+    match view_mode {
+        ViewMode::Path => {
+            let mut rows: Vec<DisplayRow> = base_items
+                .iter()
+                .map(|item| {
+                    let req_type = detect_request_type(&item.path);
+                    let stripped = strip_path(&item.path, req_type);
+                    DisplayRow {
+                        label: stripped,
+                        request_count: item.request_count,
+                        bandwidth_sum: item.bandwidth_sum,
+                        req_type,
+                        open_url: Some(item.sample_url.clone()),
+                        is_group: false,
+                    }
+                })
+                .collect();
+            sort_display_rows(&mut rows, field, descending);
+            rows
+        }
+        ViewMode::Type => build_type_rows(base_items, field, descending),
+    }
+}
+
+#[derive(Default)]
+struct Agg {
+    request_count: u64,
+    bandwidth_sum: u64,
+    sample_url: Option<String>,
+}
+
+fn build_type_rows(
+    base_items: &[PathStats],
+    field: SortField,
+    descending: bool,
+) -> Vec<DisplayRow> {
+    let mut type_map: HashMap<RequestType, Agg> = HashMap::new();
+    let mut ext_map: HashMap<(RequestType, String), Agg> = HashMap::new();
+
+    for item in base_items {
+        let req_type = detect_request_type(&item.path);
+        let type_entry = type_map.entry(req_type).or_default();
+        type_entry.request_count += item.request_count;
+        type_entry.bandwidth_sum += item.bandwidth_sum;
+        if type_entry.sample_url.is_none() {
+            type_entry.sample_url = Some(item.sample_url.clone());
+        }
+
+        if matches!(req_type, RequestType::Image | RequestType::File) {
+            let ext = extract_extension(&item.path).unwrap_or_else(|| "no ext".to_string());
+            let ext_entry = ext_map.entry((req_type, ext)).or_default();
+            ext_entry.request_count += item.request_count;
+            ext_entry.bandwidth_sum += item.bandwidth_sum;
+            if ext_entry.sample_url.is_none() {
+                ext_entry.sample_url = Some(item.sample_url.clone());
+            }
+        }
+    }
+
+    let mut type_rows: Vec<DisplayRow> = Vec::new();
+    for req_type in [
+        RequestType::Image,
+        RequestType::File,
+        RequestType::Query,
+        RequestType::Other,
+    ] {
+        let agg = match type_map.get(&req_type) {
+            Some(agg) => agg,
+            None => continue,
+        };
+        type_rows.push(DisplayRow {
+            label: type_label(req_type).to_string(),
+            request_count: agg.request_count,
+            bandwidth_sum: agg.bandwidth_sum,
+            req_type,
+            open_url: None,
+            is_group: true,
+        });
+    }
+
+    sort_display_rows(&mut type_rows, field, descending);
+
+    let mut rows: Vec<DisplayRow> = Vec::new();
+    for type_row in type_rows {
+        let req_type = type_row.req_type;
+        rows.push(type_row);
+        if matches!(req_type, RequestType::Image | RequestType::File) {
+            let mut ext_rows: Vec<DisplayRow> = ext_map
+                .iter()
+                .filter_map(|((kind, ext), agg)| {
+                    if *kind != req_type {
+                        return None;
+                    }
+                    let label = if ext == "no ext" {
+                        "  (no ext)".to_string()
+                    } else {
+                        format!("  .{ext}")
+                    };
+                    Some(DisplayRow {
+                        label,
+                        request_count: agg.request_count,
+                        bandwidth_sum: agg.bandwidth_sum,
+                        req_type,
+                        open_url: agg.sample_url.clone(),
+                        is_group: false,
+                    })
+                })
+                .collect();
+            sort_display_rows(&mut ext_rows, field, descending);
+            rows.extend(ext_rows);
+        }
+    }
+
+    rows
+}
+
+fn sort_display_rows(rows: &mut [DisplayRow], field: SortField, descending: bool) {
+    rows.sort_by(|a, b| {
+        let ordering = match field {
+            SortField::Path => a.label.cmp(&b.label),
+            SortField::Requests => a.request_count.cmp(&b.request_count),
+            SortField::AvgRequestSize => a.avg_size().cmp(&b.avg_size()),
+            SortField::Bandwidth => a.bandwidth_sum.cmp(&b.bandwidth_sum),
+        };
+        if descending {
+            ordering.reverse()
+        } else {
+            ordering
+        }
+    });
+}
+
+fn type_label(kind: RequestType) -> &'static str {
+    match kind {
+        RequestType::Image => "Images",
+        RequestType::File => "Files",
+        RequestType::Query => "Queries",
+        RequestType::Other => "Other",
+    }
+}
+
+fn row_for_item(item: &DisplayRow, path_width: usize) -> Row<'static> {
+    let display_path = format_path_display(&item.label, path_width);
+    let type_cell = Cell::from(item.req_type.label().to_string())
+        .style(Style::default().fg(item.req_type.color()));
+    let row_style = if item.is_group {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
 
     Row::new([
         type_cell,
         Cell::from(display_path),
         Cell::from(item.request_count.to_string()),
-        Cell::from(format_bytes(item.avg_request_size())),
+        Cell::from(format_bytes(item.avg_size())),
         Cell::from(format_bytes(item.bandwidth_sum)),
     ])
+    .style(row_style)
 }
 
 fn totals_row(items: &[PathStats], path_width: usize) -> Row<'static> {
@@ -487,6 +666,15 @@ fn strip_prefix_segments(path: &str, count: usize) -> Option<String> {
         None
     } else {
         Some(remainder.join("/"))
+    }
+}
+
+fn extract_extension(path: &str) -> Option<String> {
+    let (_, ext) = path.rsplit_once('.')?;
+    if ext.is_empty() {
+        None
+    } else {
+        Some(ext.to_lowercase())
     }
 }
 
