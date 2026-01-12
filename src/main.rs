@@ -7,6 +7,7 @@ use crossterm::{
 use ratatui::{
     prelude::{Constraint, CrosstermBackend, Frame, Layout, Rect, Terminal},
     style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, Cell, Row, Table, TableState},
 };
 use serde_json::Value;
@@ -25,16 +26,15 @@ struct PathStats {
     sample_url: String,
     request_count: u64,
     request_size_sum: u64,
-    request_size_count: u64,
     bandwidth_sum: u64,
 }
 
 impl PathStats {
     fn avg_request_size(&self) -> u64 {
-        if self.request_size_count == 0 {
+        if self.request_count == 0 {
             0
         } else {
-            self.request_size_sum / self.request_size_count
+            self.bandwidth_sum / self.request_count
         }
     }
 }
@@ -222,7 +222,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             }
         }
         KeyCode::Char('r') => app.set_sort(SortField::Requests),
-        KeyCode::Char('a') => app.set_sort(SortField::AvgRequestSize),
+        KeyCode::Char('s') => app.set_sort(SortField::AvgRequestSize),
         KeyCode::Char('b') => app.set_sort(SortField::Bandwidth),
         KeyCode::Char('p') => app.set_sort(SortField::Path),
         _ => {}
@@ -240,10 +240,10 @@ fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
     let path_width = path_column_width(area.width);
     let header = Row::new([
         Cell::from("T"),
-        header_cell("Path", app, SortField::Path),
-        header_cell("Requests", app, SortField::Requests),
-        header_cell("Avg Req", app, SortField::AvgRequestSize),
-        header_cell("Bandwidth", app, SortField::Bandwidth),
+        header_cell("Path", 'p', app, SortField::Path),
+        header_cell("Requests", 'r', app, SortField::Requests),
+        header_cell("Size (Avg)", 's', app, SortField::AvgRequestSize),
+        header_cell("Bandwidth", 'b', app, SortField::Bandwidth),
     ])
     .style(Style::default().add_modifier(Modifier::BOLD));
 
@@ -279,18 +279,37 @@ fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
 
 fn render_help(frame: &mut Frame, area: Rect) {
     let help = Block::default().title(
-        "Keys: q quit | up/down or j/k move | enter open | p path | r requests | a avg req | b bandwidth | repeat toggles asc/desc",
+        "Keys: q quit | up/down or j/k move | enter open | p path | r requests | s avg size | b bandwidth | repeat toggles asc/desc",
     );
     frame.render_widget(help, area);
 }
 
-fn header_cell(label: &str, app: &App, field: SortField) -> Cell<'static> {
-    let mut text = label.to_string();
-    if app.sort_field == field {
-        text.push(' ');
-        text.push(if app.descending { '↓' } else { '↑' });
+fn header_cell(label: &str, shortcut: char, app: &App, field: SortField) -> Cell<'static> {
+    let line = header_line(label, shortcut, app, field);
+    Cell::from(line)
+}
+
+fn header_line(label: &str, shortcut: char, app: &App, field: SortField) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut added_shortcut = false;
+    for ch in label.chars() {
+        if !added_shortcut && ch.eq_ignore_ascii_case(&shortcut) {
+            spans.push(Span::styled(
+                ch.to_string(),
+                Style::default().add_modifier(Modifier::UNDERLINED),
+            ));
+            added_shortcut = true;
+        } else {
+            spans.push(Span::raw(ch.to_string()));
+        }
     }
-    Cell::from(text)
+
+    if app.sort_field == field {
+        spans.push(Span::raw(" "));
+        spans.push(Span::raw(if app.descending { "↓" } else { "↑" }));
+    }
+
+    Line::from(spans)
 }
 
 fn load_stats(path: &str) -> Result<Vec<PathStats>> {
@@ -333,7 +352,6 @@ fn load_stats(path: &str) -> Result<Vec<PathStats>> {
             sample_url: url_str.to_string(),
             request_count: 0,
             request_size_sum: 0,
-            request_size_count: 0,
             bandwidth_sum: 0,
         });
 
@@ -341,7 +359,6 @@ fn load_stats(path: &str) -> Result<Vec<PathStats>> {
 
         if let Some(req) = body.get("requestSize").and_then(as_u64) {
             entry.request_size_sum += req;
-            entry.request_size_count += 1;
         }
 
         if let Some(resp) = body.get("responseSize").and_then(as_u64) {
@@ -415,20 +432,16 @@ fn row_for_item(item: &PathStats, path_width: usize) -> Row<'static> {
 
 fn totals_row(items: &[PathStats], path_width: usize) -> Row<'static> {
     let mut total_requests = 0u64;
-    let mut total_req_size = 0u64;
-    let mut total_req_count = 0u64;
     let mut total_bandwidth = 0u64;
     for item in items {
         total_requests += item.request_count;
-        total_req_size += item.request_size_sum;
-        total_req_count += item.request_size_count;
         total_bandwidth += item.bandwidth_sum;
     }
 
-    let avg_req = if total_req_count == 0 {
+    let avg_req = if total_requests == 0 {
         0
     } else {
-        total_req_size / total_req_count
+        total_bandwidth / total_requests
     };
     let label = format_path_display("TOTAL", path_width);
     Row::new([
