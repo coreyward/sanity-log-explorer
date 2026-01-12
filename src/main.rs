@@ -5,9 +5,9 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
-    prelude::{Constraint, CrosstermBackend, Frame, Layout, Rect, Terminal},
+    prelude::{Alignment, Constraint, CrosstermBackend, Frame, Layout, Rect, Terminal},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Cell, Row, Table, TableState},
 };
 use serde_json::Value;
@@ -261,20 +261,38 @@ fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
     let header = Row::new([
         type_header_cell(),
         header_cell("Path", 'p', app, SortField::Path),
-        header_cell("Requests", 'r', app, SortField::Requests),
-        header_cell("Size (Avg)", 's', app, SortField::AvgRequestSize),
-        header_cell("Bandwidth", 'b', app, SortField::Bandwidth),
+        header_cell_aligned("Requests", 'r', app, SortField::Requests, Alignment::Right),
+        header_cell_aligned(
+            "Size (Avg)",
+            's',
+            app,
+            SortField::AvgRequestSize,
+            Alignment::Right,
+        ),
+        header_cell_aligned(
+            "Bandwidth",
+            'b',
+            app,
+            SortField::Bandwidth,
+            Alignment::Right,
+        ),
     ])
     .style(Style::default().add_modifier(Modifier::BOLD));
 
     let visible_rows = visible_row_count(area.height);
-    let (start, end) = visible_range(&app.items, app.table_state.selected(), visible_rows);
+    let content_rows = visible_rows.saturating_sub(3);
+    let (start, end) = visible_range(&app.items, app.table_state.selected(), content_rows);
     let rows = app.items[start..end]
         .iter()
         .map(|item| row_for_item(item, path_width));
 
+    let divider_top = divider_row(path_width);
+    let divider_bottom = divider_row(path_width);
     let totals_row = totals_row(&app.base_items, path_width);
-    let rows = rows.chain(std::iter::once(totals_row));
+    let rows = std::iter::once(divider_top)
+        .chain(rows)
+        .chain(std::iter::once(divider_bottom))
+        .chain(std::iter::once(totals_row));
 
     let table = Table::new(
         rows,
@@ -294,7 +312,14 @@ fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
             .borders(Borders::ALL),
     );
 
-    frame.render_stateful_widget(table, area, &mut app.table_state);
+    let mut view_state = TableState::default();
+    if let Some(selected) = app.table_state.selected() {
+        if selected >= start && selected < end {
+            view_state.select(Some(selected - start + 1));
+        }
+    }
+
+    frame.render_stateful_widget(table, area, &mut view_state);
 }
 
 fn render_help(frame: &mut Frame, area: Rect) {
@@ -315,6 +340,18 @@ fn type_header_cell() -> Cell<'static> {
 fn header_cell(label: &str, shortcut: char, app: &App, field: SortField) -> Cell<'static> {
     let line = header_line(label, shortcut, app, field);
     Cell::from(line)
+}
+
+fn header_cell_aligned(
+    label: &str,
+    shortcut: char,
+    app: &App,
+    field: SortField,
+    alignment: Alignment,
+) -> Cell<'static> {
+    let line = header_line(label, shortcut, app, field);
+    let text = Text::from(line).alignment(alignment);
+    Cell::from(text)
 }
 
 fn header_line(label: &str, shortcut: char, app: &App, field: SortField) -> Line<'static> {
@@ -602,11 +639,27 @@ fn row_for_item(item: &DisplayRow, path_width: usize) -> Row<'static> {
     Row::new([
         type_cell,
         Cell::from(display_path),
-        Cell::from(item.request_count.to_string()),
-        Cell::from(format_bytes(item.avg_size())),
-        Cell::from(format_bytes(item.bandwidth_sum)),
+        right_cell(format_count(item.request_count)),
+        right_cell(format_bytes(item.avg_size())),
+        right_cell(format_bytes(item.bandwidth_sum)),
     ])
     .style(row_style)
+}
+
+fn divider_row(path_width: usize) -> Row<'static> {
+    let fill = |width: usize| "─".repeat(width.max(1));
+    Row::new([
+        Cell::from(fill(2)),
+        Cell::from(fill(path_width)),
+        Cell::from(fill(10)),
+        Cell::from(fill(12)),
+        Cell::from(fill(14)),
+    ])
+    .style(Style::default().fg(Color::DarkGray))
+}
+
+fn right_cell(value: String) -> Cell<'static> {
+    Cell::from(Text::from(value).alignment(Alignment::Right))
 }
 
 fn totals_row(items: &[PathStats], path_width: usize) -> Row<'static> {
@@ -626,9 +679,9 @@ fn totals_row(items: &[PathStats], path_width: usize) -> Row<'static> {
     Row::new([
         Cell::from(""),
         Cell::from(label),
-        Cell::from(total_requests.to_string()),
-        Cell::from(format_bytes(avg_req)),
-        Cell::from(format_bytes(total_bandwidth)),
+        right_cell(format_count(total_requests)),
+        right_cell(format_bytes(avg_req)),
+        right_cell(format_bytes(total_bandwidth)),
     ])
     .style(Style::default().add_modifier(Modifier::BOLD))
 }
@@ -756,6 +809,16 @@ fn format_bytes(value: u64) -> String {
     } else {
         format!("{:.2} {}", size, UNITS[unit])
     }
+}
+
+fn format_count(value: u64) -> String {
+    if value >= 1_000_000 {
+        return format!("{:.1}M", value as f64 / 1_000_000.0);
+    }
+    if value >= 1_000 {
+        return format!("{:.1}K", value as f64 / 1_000.0);
+    }
+    value.to_string()
 }
 
 fn open_url(url: &str) -> Result<()> {
