@@ -32,6 +32,7 @@ struct PathStats {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SortField {
     Path,
+    Ext,
     Requests,
     AvgRequestSize,
     Bandwidth,
@@ -74,6 +75,7 @@ impl RequestType {
 #[derive(Debug, Clone)]
 struct DisplayRow {
     label: String,
+    ext: String,
     request_count: u64,
     bandwidth_sum: u64,
     req_type: RequestType,
@@ -122,7 +124,7 @@ impl App {
             self.descending = !self.descending;
         } else {
             self.sort_field = field;
-            self.descending = field != SortField::Path;
+            self.descending = !matches!(field, SortField::Path | SortField::Ext);
         }
         self.rebuild_view();
         self.clamp_selection();
@@ -243,7 +245,8 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('r') => app.set_sort(SortField::Requests),
         KeyCode::Char('s') => app.set_sort(SortField::AvgRequestSize),
         KeyCode::Char('b') => app.set_sort(SortField::Bandwidth),
-        KeyCode::Char('p') => app.set_sort(SortField::Path),
+        KeyCode::Char('d') => app.set_sort(SortField::Path),
+        KeyCode::Char('e') => app.set_sort(SortField::Ext),
         KeyCode::Char('t') => app.toggle_view(),
         _ => {}
     }
@@ -257,10 +260,11 @@ fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
-    let path_width = path_column_width(area.width);
+    let id_width = id_column_width(area.width);
     let header = Row::new([
         type_header_cell(),
-        header_cell("Path", 'p', app, SortField::Path),
+        header_cell("ID", 'd', app, SortField::Path),
+        header_cell("Ext", 'e', app, SortField::Ext),
         header_cell_aligned("Requests", 'r', app, SortField::Requests, Alignment::Right),
         header_cell_aligned(
             "Size (Avg)",
@@ -284,11 +288,11 @@ fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
     let (start, end) = visible_range(&app.items, app.table_state.selected(), content_rows);
     let rows = app.items[start..end]
         .iter()
-        .map(|item| row_for_item(item, path_width));
+        .map(|item| row_for_item(item, id_width));
 
-    let divider_top = divider_row(path_width);
-    let divider_bottom = divider_row(path_width);
-    let totals_row = totals_row(&app.base_items, path_width);
+    let divider_top = divider_row(id_width);
+    let divider_bottom = divider_row(id_width);
+    let totals_row = totals_row(&app.base_items, id_width);
     let rows = std::iter::once(divider_top)
         .chain(rows)
         .chain(std::iter::once(divider_bottom))
@@ -298,7 +302,8 @@ fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
         rows,
         [
             Constraint::Length(2),
-            Constraint::Length(path_width as u16),
+            Constraint::Length(id_width as u16),
+            Constraint::Length(8),
             Constraint::Length(10),
             Constraint::Length(12),
             Constraint::Length(14),
@@ -308,7 +313,7 @@ fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
     .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
     .block(
         Block::default()
-            .title("Bandwidth by Path")
+            .title("Bandwidth by ID")
             .borders(Borders::ALL),
     );
 
@@ -324,7 +329,7 @@ fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
 
 fn render_help(frame: &mut Frame, area: Rect) {
     let help = Block::default().title(
-        "Keys: q quit | up/down or j/k move | enter open | t type view | p path | r requests | s avg size | b bandwidth | repeat toggles asc/desc",
+        "Keys: q quit | up/down or j/k move | enter open | t type view | d id | e ext | r requests | s avg size | b bandwidth | repeat toggles asc/desc",
     );
     frame.render_widget(help, area);
 }
@@ -444,8 +449,8 @@ fn as_u64(value: &Value) -> Option<u64> {
     }
 }
 
-fn path_column_width(area_width: u16) -> usize {
-    let fixed = 2u16 + 10 + 12 + 14;
+fn id_column_width(area_width: u16) -> usize {
+    let fixed = 2u16 + 8 + 10 + 12 + 14;
     let spacing = 4u16;
     let borders = 2u16;
     let available = area_width.saturating_sub(fixed + spacing + borders);
@@ -491,9 +496,10 @@ fn build_display_rows(
                 .iter()
                 .map(|item| {
                     let req_type = detect_request_type(&item.path);
-                    let stripped = strip_path(&item.path, req_type);
+                    let (id, ext) = asset_id_and_ext(&item.path, req_type);
                     DisplayRow {
-                        label: stripped,
+                        label: id,
+                        ext,
                         request_count: item.request_count,
                         bandwidth_sum: item.bandwidth_sum,
                         req_type,
@@ -557,6 +563,7 @@ fn build_type_rows(
         };
         type_rows.push(DisplayRow {
             label: type_label(req_type).to_string(),
+            ext: String::new(),
             request_count: agg.request_count,
             bandwidth_sum: agg.bandwidth_sum,
             req_type,
@@ -581,10 +588,15 @@ fn build_type_rows(
                     let label = if ext == "no ext" {
                         "  (no ext)".to_string()
                     } else {
-                        format!("  .{ext}")
+                        "  ".to_string()
                     };
                     Some(DisplayRow {
                         label,
+                        ext: if ext == "no ext" {
+                            "(none)".to_string()
+                        } else {
+                            format!(".{ext}")
+                        },
                         request_count: agg.request_count,
                         bandwidth_sum: agg.bandwidth_sum,
                         req_type,
@@ -604,7 +616,20 @@ fn build_type_rows(
 fn sort_display_rows(rows: &mut [DisplayRow], field: SortField, descending: bool) {
     rows.sort_by(|a, b| {
         let ordering = match field {
-            SortField::Path => a.label.cmp(&b.label),
+            SortField::Path => {
+                let a_rank = if a.req_type == RequestType::Query {
+                    0
+                } else {
+                    1
+                };
+                let b_rank = if b.req_type == RequestType::Query {
+                    0
+                } else {
+                    1
+                };
+                (a_rank, &a.label).cmp(&(b_rank, &b.label))
+            }
+            SortField::Ext => a.ext.cmp(&b.ext),
             SortField::Requests => a.request_count.cmp(&b.request_count),
             SortField::AvgRequestSize => a.avg_size().cmp(&b.avg_size()),
             SortField::Bandwidth => a.bandwidth_sum.cmp(&b.bandwidth_sum),
@@ -621,13 +646,13 @@ fn type_label(kind: RequestType) -> &'static str {
     match kind {
         RequestType::Image => "Images",
         RequestType::File => "Files",
-        RequestType::Query => "Queries",
+        RequestType::Query => "GROQ Queries",
         RequestType::Other => "Other",
     }
 }
 
 fn row_for_item(item: &DisplayRow, path_width: usize) -> Row<'static> {
-    let display_path = format_path_display(&item.label, path_width);
+    let display_path = format_id_display(&item.label, path_width);
     let type_cell = Cell::from(item.req_type.label().to_string())
         .style(Style::default().fg(item.req_type.color()));
     let row_style = if item.is_group {
@@ -639,6 +664,7 @@ fn row_for_item(item: &DisplayRow, path_width: usize) -> Row<'static> {
     Row::new([
         type_cell,
         Cell::from(display_path),
+        Cell::from(item.ext.clone()),
         right_cell(format_count(item.request_count)),
         right_cell(format_bytes(item.avg_size())),
         right_cell(format_bytes(item.bandwidth_sum)),
@@ -646,11 +672,12 @@ fn row_for_item(item: &DisplayRow, path_width: usize) -> Row<'static> {
     .style(row_style)
 }
 
-fn divider_row(path_width: usize) -> Row<'static> {
+fn divider_row(id_width: usize) -> Row<'static> {
     let fill = |width: usize| "─".repeat(width.max(1));
     Row::new([
         Cell::from(fill(2)),
-        Cell::from(fill(path_width)),
+        Cell::from(fill(id_width)),
+        Cell::from(fill(8)),
         Cell::from(fill(10)),
         Cell::from(fill(12)),
         Cell::from(fill(14)),
@@ -662,7 +689,7 @@ fn right_cell(value: String) -> Cell<'static> {
     Cell::from(Text::from(value).alignment(Alignment::Right))
 }
 
-fn totals_row(items: &[PathStats], path_width: usize) -> Row<'static> {
+fn totals_row(items: &[PathStats], id_width: usize) -> Row<'static> {
     let mut total_requests = 0u64;
     let mut total_bandwidth = 0u64;
     for item in items {
@@ -675,10 +702,11 @@ fn totals_row(items: &[PathStats], path_width: usize) -> Row<'static> {
     } else {
         total_bandwidth / total_requests
     };
-    let label = format_path_display("TOTAL", path_width);
+    let label = format_id_display("TOTAL", id_width);
     Row::new([
         Cell::from(""),
         Cell::from(label),
+        Cell::from(""),
         right_cell(format_count(total_requests)),
         right_cell(format_bytes(avg_req)),
         right_cell(format_bytes(total_bandwidth)),
@@ -700,12 +728,41 @@ fn detect_request_type(path: &str) -> RequestType {
     RequestType::Other
 }
 
-fn strip_path(path: &str, kind: RequestType) -> String {
+fn asset_id_and_ext(path: &str, kind: RequestType) -> (String, String) {
     match kind {
-        RequestType::Image => strip_prefix_segments(path, 3).unwrap_or_else(|| path.to_string()),
-        RequestType::File => strip_prefix_segments(path, 3).unwrap_or_else(|| path.to_string()),
-        RequestType::Query => "query".to_string(),
-        RequestType::Other => path.to_string(),
+        RequestType::Image => {
+            let remainder = strip_prefix_segments(path, 3).unwrap_or_else(|| path.to_string());
+            let file = remainder.split('/').last().unwrap_or(remainder.as_str());
+            let (name, ext) = match file.rsplit_once('.') {
+                Some((name, ext)) => (name, ext.to_string()),
+                None => (file, String::new()),
+            };
+            let id = name.split('-').next().unwrap_or(name).to_string();
+            (id, format_ext(&ext))
+        }
+        RequestType::File => {
+            let remainder = strip_prefix_segments(path, 3).unwrap_or_else(|| path.to_string());
+            let file = remainder.split('/').last().unwrap_or(remainder.as_str());
+            let (name, ext) = match file.rsplit_once('.') {
+                Some((name, ext)) => (name.to_string(), ext.to_string()),
+                None => (file.to_string(), String::new()),
+            };
+            (name, format_ext(&ext))
+        }
+        RequestType::Query => ("GROQ Queries".to_string(), String::new()),
+        RequestType::Other => {
+            let remainder = strip_prefix_segments(path, 0).unwrap_or_else(|| path.to_string());
+            let ext = extract_extension(&remainder).unwrap_or_default();
+            (remainder, format_ext(&ext))
+        }
+    }
+}
+
+fn format_ext(ext: &str) -> String {
+    if ext.is_empty() {
+        String::new()
+    } else {
+        format!(".{}", ext)
     }
 }
 
@@ -731,44 +788,8 @@ fn extract_extension(path: &str) -> Option<String> {
     }
 }
 
-fn format_path_display(path: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    if path.len() <= width {
-        return path.to_string();
-    }
-
-    let (base, ext) = match path.rsplit_once('.') {
-        Some((base, ext)) => (base, format!(".{ext}")),
-        None => (path, String::new()),
-    };
-
-    if ext.is_empty() {
-        return truncate_with_ellipsis(path, width);
-    }
-
-    if width <= ext.len() {
-        return take_right(&ext, width);
-    }
-
-    let available = width - ext.len();
-    if available <= 3 {
-        let mut out = String::new();
-        if available > 0 {
-            out.push_str(&take_left(base, available.saturating_sub(1)));
-        }
-        out.push_str("...");
-        out.push_str(&ext);
-        return out.chars().take(width).collect();
-    }
-
-    let prefix_len = available - 3;
-    let mut out = String::new();
-    out.push_str(&take_left(base, prefix_len));
-    out.push_str("...");
-    out.push_str(&ext);
-    out
+fn format_id_display(value: &str, width: usize) -> String {
+    truncate_with_ellipsis(value, width)
 }
 
 fn truncate_with_ellipsis(value: &str, width: usize) -> String {
@@ -783,17 +804,6 @@ fn truncate_with_ellipsis(value: &str, width: usize) -> String {
 
 fn take_left(value: &str, count: usize) -> String {
     value.chars().take(count).collect()
-}
-
-fn take_right(value: &str, count: usize) -> String {
-    value
-        .chars()
-        .rev()
-        .take(count)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect()
 }
 
 fn format_bytes(value: u64) -> String {
