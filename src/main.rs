@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -241,6 +241,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stderr>>, items: Vec<PathSta
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> bool {
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return true;
+    }
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => return true,
         KeyCode::Up | KeyCode::Char('k') => app.previous(),
