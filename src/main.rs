@@ -8,7 +8,7 @@ use ratatui::{
     prelude::{Alignment, Constraint, CrosstermBackend, Frame, Layout, Rect, Terminal},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Cell, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Tabs},
 };
 use serde_json::Value;
 use std::{
@@ -139,6 +139,18 @@ impl App {
         self.clamp_selection();
     }
 
+    fn next_view(&mut self) {
+        if self.view_mode == ViewMode::Path {
+            self.toggle_view();
+        }
+    }
+
+    fn previous_view(&mut self) {
+        if self.view_mode == ViewMode::Type {
+            self.toggle_view();
+        }
+    }
+
     fn rebuild_view(&mut self) {
         let descending = self.descending;
         let field = self.sort_field;
@@ -233,6 +245,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('q') | KeyCode::Esc => return true,
         KeyCode::Up | KeyCode::Char('k') => app.previous(),
         KeyCode::Down | KeyCode::Char('j') => app.next(),
+        KeyCode::Left | KeyCode::Char('h') => app.previous_view(),
+        KeyCode::Right | KeyCode::Char('l') => app.next_view(),
+        KeyCode::Tab => app.toggle_view(),
         KeyCode::Enter => {
             if let Some(selected) = app.table_state.selected() {
                 if let Some(item) = app.items.get(selected) {
@@ -247,18 +262,59 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('b') => app.set_sort(SortField::Bandwidth),
         KeyCode::Char('d') => app.set_sort(SortField::Path),
         KeyCode::Char('e') => app.set_sort(SortField::Ext),
-        KeyCode::Char('t') => app.toggle_view(),
         _ => {}
     }
     false
 }
 
 fn render(frame: &mut Frame, app: &mut App) {
-    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(frame.size());
-    render_table(frame, chunks[0], app);
-    render_help(frame, chunks[1]);
+    let chunks =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
+            .split(frame.size());
+    render_header(frame, chunks[0], app);
+    render_table(frame, chunks[1], app);
+    render_help(frame, chunks[2]);
 }
 
+fn render_header(frame: &mut Frame, area: Rect, app: &App) {
+    let chunks = Layout::horizontal([Constraint::Length(22), Constraint::Min(0)]).split(area);
+    render_title(frame, chunks[0]);
+    let right = Layout::horizontal([Constraint::Length(22), Constraint::Min(0)]).split(chunks[1]);
+    render_tabs(frame, right[0], app);
+    render_tabs_hint(frame, right[1]);
+}
+
+fn render_title(frame: &mut Frame, area: Rect) {
+    let title = Paragraph::new("Sanity Log Explorer")
+        .alignment(Alignment::Left)
+        .style(Style::default().add_modifier(Modifier::BOLD));
+    frame.render_widget(title, area);
+}
+
+fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
+    let base_style = Style::default();
+    let titles = ["By Asset", "By Type"]
+        .iter()
+        .map(|title| Line::from(Span::styled(*title, base_style)))
+        .collect::<Vec<_>>();
+    let selected = match app.view_mode {
+        ViewMode::Path => 0,
+        ViewMode::Type => 1,
+    };
+    let tabs = Tabs::new(titles)
+        .select(selected)
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .divider(Span::raw(" "))
+        .padding(" ", " ");
+    frame.render_widget(tabs, area);
+}
+
+fn render_tabs_hint(frame: &mut Frame, area: Rect) {
+    let hint = Paragraph::new("←→ switch tabs")
+        .alignment(Alignment::Right)
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(hint, area);
+}
 fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
     let id_width = id_column_width(area.width);
     let header = Row::new([
@@ -311,11 +367,7 @@ fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
     )
     .header(header)
     .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-    .block(
-        Block::default()
-            .title("Bandwidth by ID")
-            .borders(Borders::ALL),
-    );
+    .block(Block::default().borders(Borders::ALL));
 
     let mut view_state = TableState::default();
     if let Some(selected) = app.table_state.selected() {
@@ -329,16 +381,13 @@ fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
 
 fn render_help(frame: &mut Frame, area: Rect) {
     let help = Block::default().title(
-        "Keys: q quit | up/down or j/k move | enter open | t type view | d id | e ext | r requests | s avg size | b bandwidth | repeat toggles asc/desc",
+        "Keys: q quit | up/down or j/k move | left/right or h/l tabs | enter open | tab view | d id | e ext | r requests | s avg size | b bandwidth | repeat toggles asc/desc",
     );
     frame.render_widget(help, area);
 }
 
 fn type_header_cell() -> Cell<'static> {
-    let line = Line::from(vec![Span::styled(
-        "T",
-        Style::default().add_modifier(Modifier::UNDERLINED),
-    )]);
+    let line = Line::from(vec![Span::raw("T")]);
     Cell::from(line)
 }
 
