@@ -8,7 +8,10 @@ use ratatui::{
     prelude::{Alignment, Constraint, CrosstermBackend, Frame, Layout, Rect, Terminal},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Tabs},
+    widgets::{
+        Block, Borders, Cell, Clear, List, ListItem, Padding, Paragraph, Row, Table, TableState,
+        Tabs, Wrap,
+    },
 };
 use serde_json::Value;
 use std::{
@@ -100,6 +103,7 @@ struct App {
     descending: bool,
     table_state: TableState,
     view_mode: ViewMode,
+    show_help: bool,
 }
 
 impl App {
@@ -111,6 +115,7 @@ impl App {
             descending: true,
             table_state: TableState::default(),
             view_mode: ViewMode::Path,
+            show_help: false,
         };
         app.rebuild_view();
         if !app.items.is_empty() {
@@ -196,7 +201,7 @@ impl App {
 fn main() -> Result<()> {
     let path = env::args().nth(1).unwrap_or_default();
     if path.is_empty() {
-        eprintln!("Usage: bandwidth_tui <ndjson-file>");
+        eprintln!("Usage: sanity-log-explorer <ndjson-file>");
         return Ok(());
     }
 
@@ -244,8 +249,16 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return true;
     }
+    if key.code == KeyCode::Char('?') {
+        app.show_help = !app.show_help;
+        return false;
+    }
+    if app.show_help && key.code == KeyCode::Esc {
+        app.show_help = false;
+        return false;
+    }
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => return true,
+        KeyCode::Char('q') => return true,
         KeyCode::Up | KeyCode::Char('k') => app.previous(),
         KeyCode::Down | KeyCode::Char('j') => app.next(),
         KeyCode::Left | KeyCode::Char('h') => app.previous_view(),
@@ -279,7 +292,10 @@ fn render(frame: &mut Frame, app: &mut App) {
     .split(frame.size());
     render_header(frame, chunks[0], app);
     render_table(frame, chunks[1], app);
-    render_help(frame, chunks[2]);
+    render_footer(frame, chunks[2]);
+    if app.show_help {
+        render_help_popup(frame, frame.size());
+    }
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App) {
@@ -295,6 +311,131 @@ fn render_title(frame: &mut Frame, area: Rect) {
         .alignment(Alignment::Left)
         .style(Style::default().add_modifier(Modifier::BOLD));
     frame.render_widget(title, area);
+}
+
+fn render_help_popup(frame: &mut Frame, area: Rect) {
+    let popup = centered_rect_clamped(70, 60, 20, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::uniform(1));
+    let inner = block.inner(popup);
+    let header = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(inner);
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let header_cols = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(version.len() as u16 + 1),
+    ])
+    .split(header[0]);
+    let title = Paragraph::new("Help")
+        .alignment(Alignment::Left)
+        .style(Style::default().add_modifier(Modifier::BOLD));
+    let version = Paragraph::new(version)
+        .alignment(Alignment::Right)
+        .style(Style::default().fg(Color::DarkGray));
+    let subtitle = Paragraph::new("Keyboard Shortcuts")
+        .alignment(Alignment::Left)
+        .style(Style::default());
+    let key_style = Style::default().fg(Color::Cyan);
+    let key_width = 10;
+    let key_cell = |label: &str| Span::styled(format!("{label:<key_width$}"), key_style);
+    let spacer = Span::raw("  ");
+    let shortcuts = vec![
+        ListItem::new(Line::from(vec![
+            key_cell("↑/↓ or j/k"),
+            spacer.clone(),
+            Span::raw("move selection"),
+        ])),
+        ListItem::new(Line::from(vec![
+            key_cell("←/→ or h/l"),
+            spacer.clone(),
+            Span::raw("switch tabs"),
+        ])),
+        ListItem::new(Line::from(vec![
+            key_cell("Tab"),
+            spacer.clone(),
+            Span::raw("next tab"),
+        ])),
+        ListItem::new(Line::from(vec![
+            key_cell("Enter"),
+            spacer.clone(),
+            Span::raw("open selected asset"),
+        ])),
+        ListItem::new(Line::from(vec![
+            key_cell("Esc"),
+            spacer.clone(),
+            Span::raw("close help"),
+        ])),
+        ListItem::new(Line::from(vec![key_cell("q"), spacer, Span::raw("quit")])),
+    ];
+    let shortcut_count = shortcuts.len() as u16;
+    let list = List::new(shortcuts);
+    let details = Text::from(vec![
+        Line::from(Span::styled(
+            "Sorting",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("Use the underlined column letter to sort."),
+        Line::from("Press again to toggle asc/desc."),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Types",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled("I", Style::default().fg(RequestType::Image.color())),
+            Span::raw(" image"),
+            Span::raw("    "),
+            Span::styled("F", Style::default().fg(RequestType::File.color())),
+            Span::raw(" file"),
+            Span::raw("    "),
+            Span::styled("Q", Style::default().fg(RequestType::Query.color())),
+            Span::raw(" query"),
+        ]),
+    ]);
+    let content = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(header[1]);
+    let content_area = content[1];
+    let details_min = 6u16;
+    let spacer = if content_area.height > shortcut_count + details_min {
+        1u16
+    } else {
+        0u16
+    };
+    let list_rect = Rect {
+        x: content_area.x,
+        y: content_area.y,
+        width: content_area.width,
+        height: shortcut_count,
+    };
+    let details_rect = Rect {
+        x: content_area.x,
+        y: content_area.y + shortcut_count + spacer,
+        width: content_area.width,
+        height: content_area.height.saturating_sub(shortcut_count + spacer),
+    };
+    let paragraph = Paragraph::new(details).wrap(Wrap { trim: true });
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(title, header_cols[0]);
+    frame.render_widget(version, header_cols[1]);
+    frame.render_widget(subtitle, content[0]);
+    frame.render_widget(list, list_rect);
+    frame.render_widget(paragraph, details_rect);
+}
+
+fn centered_rect_clamped(percent_x: u16, percent_y: u16, min_height: u16, rect: Rect) -> Rect {
+    let height = ((rect.height as u32 * percent_y as u32) / 100) as u16;
+    let height = height.max(min_height).min(rect.height);
+    let width = ((rect.width as u32 * percent_x as u32) / 100) as u16;
+    let width = width.max(20).min(rect.width);
+    let top = rect.height.saturating_sub(height).saturating_div(2);
+    let top = top.saturating_sub(1);
+    let left = rect.width.saturating_sub(width).saturating_div(2);
+    Rect {
+        x: rect.x + left,
+        y: rect.y + top,
+        width,
+        height,
+    }
 }
 
 fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
@@ -387,11 +528,11 @@ fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_stateful_widget(table, area, &mut view_state);
 }
 
-fn render_help(frame: &mut Frame, area: Rect) {
-    let help = Block::default().title(
-        "Keys: q quit | up/down or j/k move | left/right or h/l tabs | enter open | tab view | d id | e ext | r requests | s avg size | b bandwidth | repeat toggles asc/desc",
-    );
-    frame.render_widget(help, area);
+fn render_footer(frame: &mut Frame, area: Rect) {
+    let footer = Paragraph::new("Press ? for help")
+        .alignment(Alignment::Left)
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(footer, area);
 }
 
 fn type_header_cell() -> Cell<'static> {
