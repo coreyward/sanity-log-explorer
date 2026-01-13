@@ -10,6 +10,10 @@ A terminal UI for exploring Sanity request logs and spotting high-bandwidth asse
 - Sort by ID, extension, request count, average size, or bandwidth
 - Open the selected asset URL in your system browser
 
+<img width="912" height="740" alt="Screenshot 2026-01-12 at 7 43 55 PM" src="https://github.com/user-attachments/assets/99c3b0c1-455e-4720-a77d-592ef4816d03" />
+<img width="912" height="740" alt="Screenshot 2026-01-12 at 7 44 04 PM" src="https://github.com/user-attachments/assets/1a161290-5686-46f3-b057-8b1adf26bed1" />
+<img width="912" height="740" alt="Screenshot 2026-01-12 at 7 44 18 PM" src="https://github.com/user-attachments/assets/62fdd2ac-1b9a-499d-80e8-590bcc3353c4" />
+
 ## Install
 
 Requires Rust. Build the binary with:
@@ -31,8 +35,8 @@ sanity-log-explorer <path-to-log.ndjson>
 - `↑/↓` or `j/k`: move selection
 - `←/→` or `h/l`: switch tabs
 - `Enter`: open selected asset URL
-- `q`: quit
-- `Ctrl+C`: quit
+- `q` or `⌃C`: quit
+- `?`: open help
 
 Columns can be sorted by using the underlined character as a shortcut. Sorting again by the current column toggles ascending/descending order.
 
