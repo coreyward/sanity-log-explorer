@@ -268,9 +268,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn render(frame: &mut Frame, app: &mut App) {
-    let chunks =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
-            .split(frame.size());
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(frame.size());
     render_header(frame, chunks[0], app);
     render_table(frame, chunks[1], app);
     render_help(frame, chunks[2]);
@@ -342,9 +345,11 @@ fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
     let visible_rows = visible_row_count(area.height);
     let content_rows = visible_rows.saturating_sub(3);
     let (start, end) = visible_range(&app.items, app.table_state.selected(), content_rows);
-    let rows = app.items[start..end]
-        .iter()
-        .map(|item| row_for_item(item, id_width));
+    let selected_index = app.table_state.selected();
+    let rows = app.items[start..end].iter().enumerate().map(|(idx, item)| {
+        let is_selected = selected_index == Some(start + idx);
+        row_for_item(item, id_width, app.view_mode, is_selected)
+    });
 
     let divider_top = divider_row(id_width);
     let divider_bottom = divider_row(id_width);
@@ -507,7 +512,7 @@ fn id_column_width(area_width: u16) -> usize {
 }
 
 fn visible_row_count(height: u16) -> usize {
-    let available = height.saturating_sub(3);
+    let available = height.saturating_sub(2);
     let rows = available as usize;
     rows.max(1)
 }
@@ -634,13 +639,8 @@ fn build_type_rows(
                     if *kind != req_type {
                         return None;
                     }
-                    let label = if ext == "no ext" {
-                        "  (no ext)".to_string()
-                    } else {
-                        "  ".to_string()
-                    };
                     Some(DisplayRow {
-                        label,
+                        label: String::new(),
                         ext: if ext == "no ext" {
                             "(none)".to_string()
                         } else {
@@ -700,7 +700,12 @@ fn type_label(kind: RequestType) -> &'static str {
     }
 }
 
-fn row_for_item(item: &DisplayRow, path_width: usize) -> Row<'static> {
+fn row_for_item(
+    item: &DisplayRow,
+    path_width: usize,
+    view_mode: ViewMode,
+    is_selected: bool,
+) -> Row<'static> {
     let display_path = format_id_display(&item.label, path_width);
     let type_cell = Cell::from(item.req_type.label().to_string())
         .style(Style::default().fg(item.req_type.color()));
@@ -709,11 +714,17 @@ fn row_for_item(item: &DisplayRow, path_width: usize) -> Row<'static> {
     } else {
         Style::default()
     };
+    let id_cell = if view_mode == ViewMode::Type && item.label.is_empty() && !is_selected {
+        Cell::from("-").style(Style::default().fg(Color::DarkGray))
+    } else {
+        Cell::from(display_path)
+    };
+    let ext_cell = Cell::from(item.ext.clone());
 
     Row::new([
         type_cell,
-        Cell::from(display_path),
-        Cell::from(item.ext.clone()),
+        id_cell,
+        ext_cell,
         right_cell(format_count(item.request_count)),
         right_cell(format_bytes(item.avg_size())),
         right_cell(format_bytes(item.bandwidth_sum)),
