@@ -289,12 +289,12 @@ fn render(frame: &mut Frame, app: &mut App) {
         Constraint::Min(1),
         Constraint::Length(1),
     ])
-    .split(frame.size());
+    .split(frame.area());
     render_header(frame, chunks[0], app);
     render_table(frame, chunks[1], app);
     render_footer(frame, chunks[2]);
     if app.show_help {
-        render_help_popup(frame, frame.size());
+        render_help_popup(frame, frame.area());
     }
 }
 
@@ -515,7 +515,7 @@ fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
         ],
     )
     .header(header)
-    .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
     .block(Block::default().borders(Borders::ALL));
 
     let mut view_state = TableState::default();
